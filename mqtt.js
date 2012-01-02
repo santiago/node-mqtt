@@ -2,6 +2,12 @@ var EventEmitter= require('events').EventEmitter;
 var MessageType= require('./mqtt-domain').MessageType;
 var FixedHeader= require('./mqtt-domain').FixedHeader;
 
+// Interface for authenticating against black-box backend
+// For now we're using MongoDB optimized for caching
+function Authenticate(data) {
+    return data.username=="santiago"&&data.password=="santiago";
+}
+
 function parseLength(client) {
     var client= this;
     
@@ -29,11 +35,25 @@ function parseLength(client) {
     return false;
 }
 
-function callEvent(client, event, data) {
+function callCommand(client, cmd, data) {
     ({
         'CONNECT': function() {
 	    var count = 0;
-	    sys.log(++client.count);
+	    // Gets lenght when its called.
+	    // !!! Acts as closure for incrementing and reading locals 'count' and 'data'
+	    function getLength() {
+		// console.log(data);
+		// Get MSB and multiply by 256
+		var l= data.body[count++] << 8;
+		// Most likely the byte isn't there
+		if(isNaN(l)||l===undefined) {
+		    return false;
+		}
+		// Get LSB and sum to MSB
+		return l += data.body[count++];
+	    }
+	    // sys.log(++client.count);
+
 	    var version = "\00\06MQIsdp\03";
 	    if(data.body.slice(count, count+version.length).toString('utf8') !== version) {
 		sys.log('Invalid version');
@@ -48,43 +68,11 @@ function callEvent(client, event, data) {
 	    data.willQos= (data.body[count] & 0x18) >> 3;
 	    data.willFlag= (data.body[count] & 0x04 != 0);
 	    data.cleanSession= (data.body[count] & 0x02 != 0);
-
-	    count++;
-
-	    /* Extract the keepalive */
-	    data.keepalive= data.body[count++] << 8;
-	    data.keepalive += data.body[count++];
-
-	    /* Extract the client ID length */
-	    var clientLen= data.body[count++] * 256;
-	    if(isNaN(clientLen)) {
-		console.log("0x02 Connection Refused: identifier rejected");
-		// 0x02 Connection Refused: identifier rejected
-		var event= {
-		    command: MessageType.CONNACK
-		};
-		this.emit(event.command, event);
-		return;
-	    }
-	    clientLen += data.body[count++];
-
-	    /* Is our client ID length reasonable? */
-	    if(clientLen > data.body.length) {
-		/* Just in case our client ID length is too long */
-		/* TODO: make some proper error objects or messages */
-		/* TODO: and handle this better rather than just dropping everything */
-		this.emit('error', "Protocol error - client ID length");
-		return;
-	    }
-
-	    /* Extract client ID */
-	    data.clientId= data.body.slice(count, count+clientLen).toString('utf8');
-	    count += clientLen + 2;
-
 	    /* Check for Username and Passord Flags */
-	    var hasUsername= data.body[count] >> 7 != 0;
-	    var hasPassword= data.body[count] >> 6 != 0;
+	    var hasUsername= data.body[count] >> 7 == 1;
+	    var hasPassword= data.body[count] >> 6 == 3;
 
+	    // For now we're not allowing anonymous connections
 	    if(!hasUsername || !hasPassword) {
 		var event= {
 		    command: MessageType.CONNACK,
@@ -96,24 +84,91 @@ function callEvent(client, event, data) {
 		return;
 	    }
 
-	    /* Extract the will topic/message */
+	    count++;
+
+	    /* Extract the keepalive */
+	    data.keepalive= data.body[count++] << 8;
+	    data.keepalive += data.body[count++];
+	    // TODO: Set keepAlive as timeout somewhere within the client object
+
+	    /* Extract the client ID length */
+	    var clientLen= getLength();
+	    if(!clientLen||clientLen>23) {
+		console.log("0x02 Connection Refused: identifier rejected");
+		// 0x02 connection Refused: identifier rejected
+		var event= {
+		    command: MessageType.CONNACK,
+		    code: 2,
+		    message: "0x02 Connection Refused: not authorized",
+		    clientID: data.clientID
+		};
+		client.emit(event.command, event);
+		return;
+	    }
+
+	    /* Is our client ID length reasonable? */
+	    if(clientLen > data.body.length) {
+		/* Just in case our client ID length is too long */
+		/* TODO: make some proper error objects or messages */
+		/* TODO: and handle this better rather than just dropping everything */
+		client.emit('error', "Protocol error - client ID length");
+		return;
+	    }
+
+	    /* Extract client ID */
+	    data.clientId= data.body.slice(count, count+clientLen).toString('utf8');
+	    count += clientLen;
+
+	    // Extract the will topic/message
 	    if(data.willFlag) {
-		/* Calculate the length of the topic string */
-		var topicLen= data.body[count++] << 8;
-		topicLen += data.body[count++];
-		/* Cut the topic string out of the buffer */
+		// Calculate the length of the topic string
+		var topicLen= getLength();
+
+		// Cut the topic string out of the buffer
 		data.willTopic= data.body.slice(count, count+topicLen).toString('utf8');
-		/* Move the pointer to after the topic string */
+		// Move the pointer to after the topic string
 		count += topicLen;
 
-		/* What remains in the body is will message */
+		// What remains in the body is will message 
 		data.willMessage= data.body.slice(count, data.body.length);
 	    }
-	    
-	    /* Clear the body as to not confuse the guy on the other end */
-	    delete data.body;
 
-	    // this.emit('connect', packet);
+	    // Extract username and password ...
+	    var event= {
+		command: MessageType.CONNACK,
+		code: 4,
+		message: "0x04 Connection Refused: bad user name or password",
+		clientID: data.clientID
+	    };
+
+	    // Calculate the length of the username
+	    var usernameLen= getLength();
+
+	    // username not present in payload
+	    if(!usernameLen) {
+		client.emit(event.command, event);
+		return;
+	    }
+
+	    // Extract username
+	    data.username= data.body.slice(count, count+usernameLen).toString('utf8');
+	    count += usernameLen;
+
+	    // Calculate the length of the password
+	    var passwordLen= getLength();
+	    // password not present in payload
+	    if(!passwordLen) {
+		client.emit(event.command, event);
+		return;
+	    }
+	    // Extract password
+	    data.password= data.body.slice(count, count+passwordLen).toString('utf8');
+	    count += passwordLen;
+
+	    // Authenticate
+	    if(!Authenticate(data)) {
+	    	client.emit(event.command, event);
+	    }
         },
 	// Send CONNACK message
 	'CONNACK': function() {
@@ -122,7 +177,7 @@ function callEvent(client, event, data) {
 	    var length= vh.length;
 	    client.socket.write(new Buffer(fh.concat(length).concat(vh)));
 	}
-    })[event]();
+    })[cmd]();
 }
 
 var sys= require('sys');
@@ -140,9 +195,9 @@ function MQTTClient(socket) {
     this.count= 0;
     this.discarded= 0;
 
-    var events= ['CONNECT','CONNACK','PUBLISH','PUBACK','PUBREC','PUBREL','PUBCOMP','SUBSCRIBE','SUBACK','UNSUBSCRIBE','UNSUBACK','PINGREQ','PINGRESP','DISCONNECT'];
-    events.forEach(function(e) {
-        self.on(MessageType[e], function(data) { callEvent(self, e, data) });
+    var commands= ['CONNECT','CONNACK','PUBLISH','PUBACK','PUBREC','PUBREL','PUBCOMP','SUBSCRIBE','SUBACK','UNSUBSCRIBE','UNSUBACK','PINGREQ','PINGRESP','DISCONNECT'];
+    commands.forEach(function(e) {
+        self.on(MessageType[e], function(data) { callCommand(self, e, data) });
     });
 
     this.on('error', function() {
@@ -165,8 +220,6 @@ function MQTTClient(socket) {
 sys.inherits(MQTTClient, EventEmitter);
 
 MQTTClient.prototype.read= function(data) {
-    console.log(data);
-
     var client= this;
 
     // Accumulate incoming data
@@ -181,8 +234,8 @@ MQTTClient.prototype.read= function(data) {
 
     // If next packet is taking too long
     client.timeout= setTimeout(function(client) {
-	sys.log('Discarding incomplete packet');
-	sys.log(++client.discarded);
+	// sys.log('Discarding incomplete packet');
+	// sys.log(++client.discarded);
 	// client.emit('error', "Discarding incomplete packet");
 	return;
     }, 5000, this);
