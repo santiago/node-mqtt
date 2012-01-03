@@ -57,7 +57,8 @@ function callCommand(client, cmd, data) {
 	    var version = "\00\06MQIsdp\03";
 	    if(data.body.slice(count, count+version.length).toString('utf8') !== version) {
 		sys.log('Invalid version');
-		client.emit('error', '0x01 Connection Refused: unacceptable protocol version');
+		client.connack(1);
+		return;
 	    }
 
 	    /* Skip the version field */
@@ -74,13 +75,7 @@ function callCommand(client, cmd, data) {
 
 	    // For now we're not allowing anonymous connections
 	    if(!hasUsername || !hasPassword) {
-		var event= {
-		    command: MessageType.CONNACK,
-		    code: 5,
-		    message: "0x05 Connection Refused: not authorized",
-		    clientID: data.clientID
-		};
-		client.emit(event.command, event);
+		client.connack(5);
 		return;
 	    }
 
@@ -96,13 +91,7 @@ function callCommand(client, cmd, data) {
 	    if(!clientLen||clientLen>23) {
 		console.log("0x02 Connection Refused: identifier rejected");
 		// 0x02 connection Refused: identifier rejected
-		var event= {
-		    command: MessageType.CONNACK,
-		    code: 2,
-		    message: "0x02 Connection Refused: not authorized",
-		    clientID: data.clientID
-		};
-		client.emit(event.command, event);
+		client.connack(2);
 		return;
 	    }
 
@@ -134,19 +123,12 @@ function callCommand(client, cmd, data) {
 	    }
 
 	    // Extract username and password ...
-	    var event= {
-		command: MessageType.CONNACK,
-		code: 4,
-		message: "0x04 Connection Refused: bad user name or password",
-		clientID: data.clientID
-	    };
-
 	    // Calculate the length of the username
 	    var usernameLen= getLength();
 
 	    // username not present in payload
 	    if(!usernameLen) {
-		client.emit(event.command, event);
+		client.connack(4);
 		return;
 	    }
 
@@ -158,7 +140,7 @@ function callCommand(client, cmd, data) {
 	    var passwordLen= getLength();
 	    // password not present in payload
 	    if(!passwordLen) {
-		client.emit(event.command, event);
+		client.connack(4);
 		return;
 	    }
 	    // Extract password
@@ -167,8 +149,11 @@ function callCommand(client, cmd, data) {
 
 	    // Authenticate
 	    if(!Authenticate(data)) {
-	    	client.emit(event.command, event);
+	    	client.connack(4);
 	    }
+
+	    // Everything went a'right, connection accepted
+	    client.connack(0);
         },
 	// Send CONNACK message
 	'CONNACK': function() {
@@ -218,6 +203,14 @@ function MQTTClient(socket) {
     });
 }
 sys.inherits(MQTTClient, EventEmitter);
+
+MQTTClient.prototype.connack= function(code) {
+    var event= {
+	command: MessageType.CONNACK,
+	code: code
+    };
+    this.emit(event.command, event);
+};
 
 MQTTClient.prototype.read= function(data) {
     var client= this;

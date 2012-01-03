@@ -31,8 +31,10 @@ describe('MQTT', function() {
 	var vh= VERSION.concat([FLAGS,0,0x0A]);
 	var length= vh.length;
 
-	clientID= new Buffer(clientID);
-	length += clientID.length+2;
+	if(clientID!==undefined) { 
+	    clientID= new Buffer(clientID); 
+	    length += clientID.length+2;
+	}
 
 	if(username!==undefined) {
 	    username= new Buffer(username);
@@ -47,8 +49,10 @@ describe('MQTT', function() {
 	client.write(new Buffer(fh.concat(length).concat(vh)));
 
 	// Push clientID into stream
-	client.write(new Buffer([0x00,clientID.length]));
-	client.write(clientID);
+	if (clientID!==undefined) {
+	    client.write(new Buffer([0x00,clientID.length]));
+	    if(clientID.length) { client.write(clientID); }
+	}
 
 	// Push username into stream
 	if (username!==undefined) { 
@@ -73,14 +77,28 @@ describe('MQTT', function() {
 	    client.removeAllListeners(MessageType.CONNACK);
 	});
 
-	it("should check for version 3");
+	it("should refuse connection if not acceptable protocol version");
 	
-	it("should check for clientID");
-	
-	it("should validate clientID length [1, 23]");
+	it("should refuse connection if clientID has no length or is not present", function(done) {
+	    var FLAGS= 3 << 6; // Username and Password flags set
+	    var connack= function(data) {
+		data[3].should.equal(2);
+		done();
+	    };
+	    connect("", FLAGS, connack);
+	});
+
+	it("should refuse connection if clientID has length > 23", function(done) {
+	    var FLAGS= 3 << 6; // Username and Password flags set
+	    var connack= function(data) {
+		data[3].should.equal(2);
+		done();
+	    };
+	    connect("012345678901234567890123", FLAGS, connack);
+	});
 	
 	it("should refuse connection with return code 5 if username or password flags not set in variable header", function(done) {
-	    var FLAGS= 0x80; // Username set and Password not set
+	    var FLAGS= 0x80; // Username set and Password flags not set
 	    connectMe(FLAGS, function(data) {
 		data[3].should.equal(5);
 		done();
@@ -88,7 +106,7 @@ describe('MQTT', function() {
 	});
 	
 	it("should refuse connection with return code 4 if username or password not present in payload", function(done) {
-	    var FLAGS= 3 << 6; // Username and Password set
+	    var FLAGS= 3 << 6; // Username and Password flags set
 	    var connack= function(data) {
 		data[3].should.equal(4);
 		done();
@@ -97,7 +115,7 @@ describe('MQTT', function() {
 	});
 	
 	it("should refuse connection with return code 4 if wrong username or password", function(done) {
-	    var FLAGS= 3 << 6; // Username and Password set
+	    var FLAGS= 3 << 6; // Username and Password flags set
 	    var connack= function(data) {
 		data[3].should.equal(4);
 		done();
@@ -105,13 +123,13 @@ describe('MQTT', function() {
 	    connect("santiago", FLAGS, connack, "santiag", "santiago");
 	});
 	
-	it("should refuse connection with return code 3");
-	it("should refuse connection with return code 2");
+	it("should connect", function(done) {
+	    var FLAGS= 3 << 6; // Username and Password flags set
+	    connectMe(FLAGS, function(data) {
+		data[3].should.equal(0);
+		done();
+	    });
+	});
 	
-	it('should validate variable header', function() {
-	});
-
-	it('should validate payload', function() {
-	});
     });
 });
