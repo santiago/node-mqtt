@@ -40,9 +40,8 @@ function callCommand(client, cmd, data) {
         'CONNECT': function() {
 	    var count = 0;
 	    // Gets lenght when its called.
-	    // !!! Acts as closure for incrementing and reading locals 'count' and 'data'
+	    // This a closure that increments 'count' and reads 'data'
 	    function getLength() {
-		// console.log(data);
 		// Get MSB and multiply by 256
 		var l= data.body[count++] << 8;
 		// Most likely the byte isn't there
@@ -52,7 +51,6 @@ function callCommand(client, cmd, data) {
 		// Get LSB and sum to MSB
 		return l += data.body[count++];
 	    }
-	    // sys.log(++client.count);
 
 	    var version = "\00\06MQIsdp\03";
 	    if(data.body.slice(count, count+version.length).toString('utf8') !== version) {
@@ -161,6 +159,70 @@ function callCommand(client, cmd, data) {
 	    var vh= [0x00,data.code];
 	    var length= vh.length;
 	    client.socket.write(new Buffer(fh.concat(length).concat(vh)));
+	},
+	'PUBLISH': function() {
+	},
+	'PUBACK': function() {
+	},
+	'SUBSCRIBE': function() {
+	    var count = 0;
+	    function getLength() {
+		// Get MSB and multiply by 256
+		var l= data.body[count++] << 8;
+		// Most likely the byte isn't there
+		if(isNaN(l)||l===undefined) {
+		    return false;
+		}
+		// Get LSB and sum to MSB
+		return l += data.body[count++];
+	    }
+
+	    var getMessageID= getLength;
+
+	    // If there's no Message ID do nothing
+	    var MessageID= getMessageID();
+	    if(!MessageID) {
+		return false;
+	    }
+
+	    // Fixed Header QoS should be 1; otherwise, send SUBACK anyway
+	    // and return
+	    if(data.qos!==1) {
+		client.emit(MessageType.SUBACK, MessageID);
+		return false;
+	    }
+
+	    // Extract the topic(s)
+	    var topics= [];
+	    while(data.body[count]!==undefined) {
+		var length= getLength();
+		count += length;
+		var topic= {
+		    name: data.body.slice(count-length, count).toString('utf8'),
+		    qos: data.body.slice(count++,count).toString('utf8')
+		};
+		topics.push(topic);
+		client.subscriptions.push(topic.name);
+	    }
+
+	    // Emit SUBACK
+	    var event= {
+		command: MessageType.SUBACK,
+		MessageID: MessageID,
+		topics: topics
+	    };
+	    client.emit(event.command, event);
+	},
+	'SUBACK': function() {
+	    var fh= FixedHeader(MessageType.SUBACK, 0, 0, 0);
+	    var length= 2; // 2 MessageID bytes
+	    var MessageID= [0,data.MessageID];
+
+	    var topics= data.topics.map(function(t) {
+		return t.qos;
+	    });
+	    length += topics.length;
+	    client.socket.write(new Buffer(fh.concat(length).concat(MessageID).concat(topics)));
 	}
     })[cmd]();
 }
@@ -243,11 +305,10 @@ MQTTClient.prototype.read= function(data) {
 
 	// Cut the current packet out of the buffer
 	var packet= client.buffer.slice(0, length.total);
-
 	var event= {
 	    command: (packet[0] & 0xF0) >> 4,
 	    dup: ((packet[0] & 0x08) == 0x08),
-	    qos: (packet[0] & 0x06) >> 2, 
+	    qos: (packet[0] & 0x06) / 2, 
 	    retain: ((packet[0] & 0x01) != 0),
 	    body: packet.slice(length.fixed, length.total)
 	};

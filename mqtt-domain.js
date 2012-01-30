@@ -1,6 +1,6 @@
 module.exports= {
     FixedHeader: function (messageType, dup, qos, retain) {
-	return [0x00 | messageType*0x10 | dup | qos | retain];
+	return [0x00 | messageType*0x10 | dup*0x08 | qos*0x02 | retain];
     },
     
     MessageType: {

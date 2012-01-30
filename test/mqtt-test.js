@@ -68,6 +68,13 @@ describe('MQTT', function() {
 	client.on(MessageType.CONNACK, connack);
     }
     
+    function subscribe() {
+	// Fixed Header
+	var fh= FixedHeader(MessageType.SUBSCRIBE, 0, 1, 0);
+	var vh= VERSION.concat([FLAGS,0,0x0A]);
+	var length= vh.length;
+    }
+
     function connectMe(FLAGS, connack) {
 	connect("santiago", FLAGS, connack, config.username, config.password);
     }
@@ -97,7 +104,7 @@ describe('MQTT', function() {
 	    connect("012345678901234567890123", FLAGS, connack);
 	});
 	
-	it("should refuse connection with return code 5 if username or password flags not set in variable header", function(done) {
+	it("should refuse connection with return code 5 if username or password flags not set in the Variable Header", function(done) {
 	    var FLAGS= 0x80; // Username set and Password flags not set
 	    connectMe(FLAGS, function(data) {
 		data[3].should.equal(5);
@@ -130,6 +137,60 @@ describe('MQTT', function() {
 		done();
 	    });
 	});
-	
+    });
+
+    describe('SUBSCRIBE/SUBACK', function() {
+	beforeEach(function(done) {
+	    client.removeAllListeners(MessageType.CONNACK);
+	    client.removeAllListeners(MessageType.SUBACK);
+
+	    var FLAGS= 3 << 6;
+	    connectMe(FLAGS, function(data) {
+		done();
+	    });
+	});
+
+	it("should respond with a vector of granted QoS levels for each topic name", function(done) {
+	    var fh= FixedHeader(MessageType.SUBSCRIBE, 0, 1, 0);
+	    var vh= [0x00,10]; // Message ID
+	    var length= vh.length;
+	    
+	    var topic1= new Buffer("topic1");
+	    length += topic1.length+3;
+	    var topic2= new Buffer("topic2");
+	    length += topic2.length+3;
+	    var topic3= new Buffer("topic3");
+	    length += topic3.length+3;
+	    
+	    client.write(new Buffer(fh.concat(length).concat(vh)));
+
+	    // A topic/QoS(0) pair
+	    client.write(new Buffer([0x00,topic1.length]));
+	    client.write(topic1);
+	    client.write('0');
+	    // Another topic/QoS(1) pair
+	    client.write(new Buffer([0x00,topic2.length]));
+	    client.write(topic2);
+	    client.write('1');
+	    // Yet another topic/QoS(2) pair
+	    client.write(new Buffer([0x00,topic3.length]));
+	    client.write(topic3);
+	    client.write('2');
+	    
+	    client.on(MessageType.SUBACK, function(data) {
+		data[1].should.equal(5); // Length
+		data[2].should.equal(0); // MessageID MSB
+		data[3].should.equal(10); // MessageID LSB
+		// Test topics' qos
+		data[4].should.equal(0);
+		data[5].should.equal(1);
+		data[6].should.equal(2);
+		done();
+	    });
+	});
+
+	// it("should contain at least one topic", function(done) {
+	//     done();
+	// });
     });
 });
