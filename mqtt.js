@@ -10,7 +10,7 @@ function Authenticate(data) {
 
 function parseLength(client) {
     var client= this;
-    
+
     /* Calculate the length of the packet */
     var length = 0;
     var mul = 1;
@@ -36,6 +36,19 @@ function parseLength(client) {
 }
 
 function callCommand(client, cmd, data) {
+    var _count = 0;
+    function _getLength() {
+	// Get MSB and multiply by 256
+	var l= data.body[_count++] << 8;
+
+	// Most likely the byte isn't there
+	if(isNaN(l)||l===undefined) {
+	    return false;
+	}
+	// Get LSB and sum to MSB
+	return l += data.body[_count++];
+    }
+
     ({
         'CONNECT': function() {
 	    var count = 0;
@@ -161,8 +174,49 @@ function callCommand(client, cmd, data) {
 	    client.socket.write(new Buffer(fh.concat(length).concat(vh)));
 	},
 	'PUBLISH': function() {
+	    // Extract topic ...
+	    var topicLen= _getLength();
+
+	    // topic not present in Variable Header
+	    if(!topicLen) {
+		return;
+	    }
+
+	    data.topic= data.body.slice(_count, _count+topicLen).toString('utf8');
+	    _count += topicLen;
+
+	    var messageID= _getLength();
+
+	    // Extract payload ...
+	    var chunkLen, payload="";
+	    do {
+		chunkLen= _getLength()
+		payload += data.body.slice(_count, _count+chunkLen).toString('utf8');
+		_count += chunkLen;
+	    } while (chunkLen==65535)
+
+	    // Emit SUBACK
+	    if(data.qos==1) {
+		var event= { command: MessageType.PUBACK, messageId: messageID };
+		client.emit(event.command, event);
+	    }
+	    // Emit SUBCOMP
+	    if(data.qos==2) {
+		var event= { command: MessageType.PUBACK, messageId: messageID };
+		client.emit(event.command, event);
+	    }
 	},
 	'PUBACK': function() {
+	    var fh= FixedHeader(MessageType.PUBACK, 0, 0, 0);
+	    fh= fh.concat([2]); // Remaining Length
+	    var vh= [data.messageId/256|0, data.messageId%256];
+	    client.socket.write(new Buffer(fh.concat(vh)));
+	},
+	'PUBREC': function() {
+	},
+	'PUBREL': function() {
+	},
+	'PUBCOMP': function() {
 	},
 	'SUBSCRIBE': function() {
 	    var count = 0;
@@ -283,9 +337,6 @@ MQTTClient.prototype.read= function(data) {
     client.buffer.copy(newBuf);
     data.copy(newBuf, client.buffer.length);
     client.buffer= newBuf;
-
-    // if(client.pause) { return; }
-    // client.pause= true;
 
     // If next packet is taking too long
     client.timeout= setTimeout(function(client) {

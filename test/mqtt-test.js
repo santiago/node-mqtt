@@ -2,9 +2,13 @@ require('should');
 var sys= require('sys');
 var net= require('net');
 
-var Domain= require('../mqtt-domain')
+var Domain= require('../mqtt-domain');
 var FixedHeader= Domain.FixedHeader;
 var MessageType= Domain.MessageType;
+// Utils
+var encodeLength= Domain.encodeLength;
+var chunker= Domain.chunker;
+var utf8StringBuffer= Domain.utf8StringBuffer;
 
 describe('MQTT', function() {
     var client = new net.Socket(); 
@@ -155,11 +159,11 @@ describe('MQTT', function() {
 	    var vh= [0x00,10]; // Message ID
 	    var length= vh.length;
 	    
-	    var topic1= new Buffer("topic1");
+	    var topic1= new Buffer("salsa");
 	    length += topic1.length+3;
-	    var topic2= new Buffer("topic2");
+	    var topic2= new Buffer("rock");
 	    length += topic2.length+3;
-	    var topic3= new Buffer("topic3");
+	    var topic3= new Buffer("rap");
 	    length += topic3.length+3;
 	    
 	    client.write(new Buffer(fh.concat(length).concat(vh)));
@@ -192,5 +196,42 @@ describe('MQTT', function() {
 	// it("should contain at least one topic", function(done) {
 	//     done();
 	// });
+    });
+
+    describe('PUBLISH/PUBACK', function() {
+	it("should publish", function(done) {
+	    var fh= FixedHeader(MessageType.PUBLISH, 0, 1, 0);
+
+	    var topicLength= new Buffer([0x00,5]);
+	    var topic= new Buffer("salsa");
+	    var messageId= new Buffer([0x00,10]);
+	    var data= function() {
+		var output= "01234567890abcdefghijklmnopqrstuvwxyzª!·$%&/()=?¿";
+		while(output.length < 965535) { // Something really big
+		    output += output;
+		}
+		return (new Buffer(output));
+	    }();
+	    var chunked= chunker(data);
+
+	    var length= encodeLength((topic.length+2)+messageId.length+(data.length+chunked.length*2));
+
+	    // Write Fixed Header
+	    client.write(new Buffer(fh.concat(length)));
+	    // Write Variable Header
+	    client.write(topicLength);
+	    client.write(topic);
+	    client.write(messageId);
+
+	    // Write chunked Payload
+	    chunked.forEach(function(chunk) {
+		client.write(utf8StringBuffer(chunk));
+	    });
+
+	    client.on(MessageType.PUBACK, function(data) {
+		data[3].should.equal(10);
+		done();
+	    });
+	});
     });
 });
