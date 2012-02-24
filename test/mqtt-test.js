@@ -201,34 +201,75 @@ describe('MQTT', function() {
     describe('PUBLISH/PUBACK', function() {
 	it("should publish", function(done) {
 	    var fh= FixedHeader(MessageType.PUBLISH, 0, 1, 0);
-
+	    
 	    var topicLength= new Buffer([0x00,5]);
 	    var topic= new Buffer("salsa");
 	    var messageId= new Buffer([0x00,10]);
-	    var data= function() {
+	    var payload= function() {
 		var output= "01234567890abcdefghijklmnopqrstuvwxyzª!·$%&/()=?¿";
-		while(output.length < 965535) { // Something really big
+		// while(output.length < 965535) { // Ma' this' big!
+		while(output.length < 65535) { // Ma' this' big!
 		    output += output;
 		}
 		return (new Buffer(output));
 	    }();
-	    var chunked= chunker(data);
-
-	    var length= encodeLength((topic.length+2)+messageId.length+(data.length+chunked.length*2));
-
+	    var chunked= chunker(payload);
+	    
+	    var length= encodeLength((topic.length+2)+messageId.length+(payload.length+chunked.length*2));
+	    
 	    // Write Fixed Header
 	    client.write(new Buffer(fh.concat(length)));
 	    // Write Variable Header
 	    client.write(topicLength);
 	    client.write(topic);
 	    client.write(messageId);
-
+	    
 	    // Write chunked Payload
 	    chunked.forEach(function(chunk) {
 		client.write(utf8StringBuffer(chunk));
 	    });
-
+	    
 	    client.on(MessageType.PUBACK, function(data) {
+		data[3].should.equal(10);
+		done();
+	    });
+	});
+    });
+	
+    describe('PUBLISH/PUBREC-PUBREL-PUBCOMP', function() {
+	it("should publish", function(done) {
+	    var fh= FixedHeader(MessageType.PUBLISH, 0, 2, 0);
+	    
+	    var topicLength= new Buffer([0x00,5]);
+	    var topic= new Buffer("salsa");
+	    var messageId= new Buffer([0x00,0x0a]);
+	    var payload= new Buffer("salsa");
+	    var length= encodeLength((topic.length+2)+messageId.length+(payload.length+2));
+	    
+	    // Write Fixed Header
+	    client.write(new Buffer(fh.concat(length)));
+	    // Write Variable Header
+	    client.write(topicLength);
+	    client.write(topic);
+	    client.write(messageId);
+	    // Write Payload
+	    client.write(new Buffer([0x00,payload.length]));
+	    client.write(payload);
+	    
+	    client.on(MessageType.PUBREC, function(data) {
+		// Message ID should be 10
+		data[3].should.equal(10);
+		
+		// Respond with PUBREL
+		var fh= FixedHeader(MessageType.PUBREL, 0, 1, 0);
+		fh= fh.concat([2]); // Remaining Length
+		
+		client.write(new Buffer(fh));
+		client.write(messageId);
+	    });
+	    
+	    client.on(MessageType.PUBCOMP, function(data) {
+		// Message ID should be 10
 		data[3].should.equal(10);
 		done();
 	    });

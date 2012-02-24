@@ -37,6 +37,7 @@ function parseLength(client) {
 
 function callCommand(client, cmd, data) {
     var _count = 0;
+
     function _getLength() {
 	// Get MSB and multiply by 256
 	var l= data.body[_count++] << 8;
@@ -47,6 +48,15 @@ function callCommand(client, cmd, data) {
 	}
 	// Get LSB and sum to MSB
 	return l += data.body[_count++];
+    }
+
+    function getMessageId() {
+	var messageId= _getLength();
+	return [messageId/256|0, messageId%256];
+    }
+
+    function emit(event) {
+	client.emit(event.command, event);
     }
 
     ({
@@ -185,7 +195,7 @@ function callCommand(client, cmd, data) {
 	    data.topic= data.body.slice(_count, _count+topicLen).toString('utf8');
 	    _count += topicLen;
 
-	    var messageID= _getLength();
+	    var messageId= getMessageId();
 
 	    // Extract payload ...
 	    var chunkLen, payload="";
@@ -195,46 +205,36 @@ function callCommand(client, cmd, data) {
 		_count += chunkLen;
 	    } while (chunkLen==65535)
 
-	    // Emit SUBACK
+	    // QoS 1, emit PUBACK
 	    if(data.qos==1) {
-		var event= { command: MessageType.PUBACK, messageId: messageID };
-		client.emit(event.command, event);
+		emit({ command: MessageType.PUBACK, messageId: messageId });
 	    }
-	    // Emit SUBCOMP
+	    // QoS 2, emit PUBREC
 	    if(data.qos==2) {
-		var event= { command: MessageType.PUBACK, messageId: messageID };
-		client.emit(event.command, event);
+		emit({ command: MessageType.PUBREC, messageId: messageId });
 	    }
 	},
 	'PUBACK': function() {
-	    var fh= FixedHeader(MessageType.PUBACK, 0, 0, 0);
-	    fh= fh.concat([2]); // Remaining Length
-	    var vh= [data.messageId/256|0, data.messageId%256];
-	    client.socket.write(new Buffer(fh.concat(vh)));
+	    var msg= FixedHeader(MessageType.PUBACK, 0, 0, 0);
+	    msg= msg.concat([2]).concat(data.messageId); // Remaining Length + MessageID
+	    client.socket.write(new Buffer(msg));
 	},
 	'PUBREC': function() {
+	    var msg= FixedHeader(MessageType.PUBREC, 0, 0, 0);
+	    msg= msg.concat([2]).concat(data.messageId); // Remaining Length + MessageID
+	    client.socket.write(new Buffer(msg));
 	},
 	'PUBREL': function() {
+	    emit({ command: MessageType.PUBCOMP, messageId: getMessageId() });
 	},
 	'PUBCOMP': function() {
+	    var msg= FixedHeader(MessageType.PUBCOMP, 0, 0, 0);
+	    msg= msg.concat([2]).concat(data.messageId); // Remaining Length + MessageID
+	    client.socket.write(new Buffer(msg));
 	},
 	'SUBSCRIBE': function() {
-	    var count = 0;
-	    function getLength() {
-		// Get MSB and multiply by 256
-		var l= data.body[count++] << 8;
-		// Most likely the byte isn't there
-		if(isNaN(l)||l===undefined) {
-		    return false;
-		}
-		// Get LSB and sum to MSB
-		return l += data.body[count++];
-	    }
-
-	    var getMessageID= getLength;
-
 	    // If there's no Message ID do nothing
-	    var MessageID= getMessageID();
+	    var MessageID= getMessageId();
 	    if(!MessageID) {
 		return false;
 	    }
@@ -248,12 +248,12 @@ function callCommand(client, cmd, data) {
 
 	    // Extract the topic(s)
 	    var topics= [];
-	    while(data.body[count]!==undefined) {
-		var length= getLength();
-		count += length;
+	    while(data.body[_count]!==undefined) {
+		var length= _getLength();
+		_count += length;
 		var topic= {
-		    name: data.body.slice(count-length, count).toString('utf8'),
-		    qos: data.body.slice(count++,count).toString('utf8')
+		    name: data.body.slice(_count-length, _count).toString('utf8'),
+		    qos: data.body.slice(_count++,_count).toString('utf8')
 		};
 		topics.push(topic);
 		client.subscriptions.push(topic.name);
@@ -270,13 +270,24 @@ function callCommand(client, cmd, data) {
 	'SUBACK': function() {
 	    var fh= FixedHeader(MessageType.SUBACK, 0, 0, 0);
 	    var length= 2; // 2 MessageID bytes
-	    var MessageID= [0,data.MessageID];
+	    var MessageID= data.MessageID;
 
 	    var topics= data.topics.map(function(t) {
 		return t.qos;
 	    });
 	    length += topics.length;
 	    client.socket.write(new Buffer(fh.concat(length).concat(MessageID).concat(topics)));
+	},
+	'UNSUBSCRIBE': function() {
+	    
+	},
+	'UNSUBACK': function() {
+	},
+	'PINGREQ': function() {
+	},
+	'PINGRESP': function() {
+	},
+	'DISCONNECT': function() {
 	}
     })[cmd]();
 }
@@ -375,11 +386,11 @@ MQTTClient.prototype.read= function(data) {
 };
 
 function MQTTServer() {
-    this.server = net.createServer();
-    var self = this;
+    this.server= net.createServer();
+    var self= this;
     this.server.on('connection', function(socket) {
 	sys.log("Connection from " + socket.remoteAddress);
-	client = new MQTTClient(socket);
+	client= new MQTTClient(socket);
 	self.emit('new_client', client);
     });
 }
