@@ -144,16 +144,6 @@ describe('MQTT', function() {
     });
 
     describe('SUBSCRIBE/SUBACK', function() {
-	beforeEach(function(done) {
-	    client.removeAllListeners(MessageType.CONNACK);
-	    client.removeAllListeners(MessageType.SUBACK);
-
-	    var FLAGS= 3 << 6;
-	    connectMe(FLAGS, function(data) {
-		done();
-	    });
-	});
-
 	it("should respond with a vector of granted QoS levels for each topic name", function(done) {
 	    var fh= FixedHeader(MessageType.SUBSCRIBE, 0, 1, 0);
 	    var vh= [0x00,10]; // Message ID
@@ -193,9 +183,7 @@ describe('MQTT', function() {
 	    });
 	});
 
-	// it("should contain at least one topic", function(done) {
-	//     done();
-	// });
+	it("should contain at least one topic");
     });
 
     describe('PUBLISH/PUBACK', function() {
@@ -208,7 +196,7 @@ describe('MQTT', function() {
 	    var payload= function() {
 		var output= "01234567890abcdefghijklmnopqrstuvwxyzª!·$%&/()=?¿";
 		// while(output.length < 965535) { // Ma' this' big!
-		while(output.length < 65535) { // Ma' this' big!
+		while(output.length < 65535) {
 		    output += output;
 		}
 		return (new Buffer(output));
@@ -273,6 +261,44 @@ describe('MQTT', function() {
 		data[3].should.equal(10);
 		done();
 	    });
+	});
+    });
+
+    describe('UNSUBSCRIBE/UNSUBACK', function() {
+	it("should unsubscribe", function(done) {
+	    var fh= FixedHeader(MessageType.UNSUBSCRIBE, 0, 1, 0);
+	    fh= fh.concat([2]);
+	    var messageId= new Buffer([0x00,0x0a]);
+	    client.write(new Buffer(fh));
+	    client.write(messageId);
+
+	    client.on(MessageType.UNSUBACK, function(data) {
+		// Remaining Length should be 2
+		data[1].should.equal(2);
+		// Message ID should be 10
+		data[3].should.equal(10);
+		done();
+	    });
+	});
+    });
+
+    describe('PINGREQ/PINGRESP', function() {
+	it("should ping and get response", function(done) {
+	    var fh= FixedHeader(MessageType.PINGREQ, 0, 0, 0);
+	    client.write(new Buffer(fh.concat([0]))); // Remaining Lenght is 0
+
+	    client.on(MessageType.PINGRESP, function(data) {
+		done();
+	    });
+	});
+    });
+
+    describe('DISCONNECT', function() {
+	it("disconnect", function(done) {
+	    var fh= FixedHeader(MessageType.DISCONNECT, 0, 0, 0);
+	    client.write(new Buffer(fh.concat([0]))); // Remaining Lenght is 0
+	    client.close();
+	    done();
 	});
     });
 });

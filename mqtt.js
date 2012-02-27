@@ -173,8 +173,8 @@ function callCommand(client, cmd, data) {
 	    	client.connack(4);
 	    }
 
-	    // Everything went a'right, connection accepted
-	    client.connack(0);
+	    // Everything went a'right, acknowledge connection
+	    emit({ command: MessageType.CONNACK, code: code });
         },
 	// Send CONNACK message
 	'CONNACK': function() {
@@ -265,7 +265,7 @@ function callCommand(client, cmd, data) {
 		MessageID: MessageID,
 		topics: topics
 	    };
-	    client.emit(event.command, event);
+	    emit(event);
 	},
 	'SUBACK': function() {
 	    var fh= FixedHeader(MessageType.SUBACK, 0, 0, 0);
@@ -279,15 +279,28 @@ function callCommand(client, cmd, data) {
 	    client.socket.write(new Buffer(fh.concat(length).concat(MessageID).concat(topics)));
 	},
 	'UNSUBSCRIBE': function() {
-	    
+	    // If there's no Message ID do nothing
+	    var messageId= getMessageId();
+	    if(!messageId) {
+		return false;
+	    }
+	    emit({ command: MessageType.UNSUBACK, messageId: messageId});
 	},
 	'UNSUBACK': function() {
+	    var fh= FixedHeader(MessageType.UNSUBACK, 0, 0, 0);
+	    var length= 2; // 2 MessageID bytes
+	    var messageId= data.messageId;
+	    client.socket.write(new Buffer(fh.concat(length).concat(messageId)));
 	},
 	'PINGREQ': function() {
+	    emit({ command: MessageType.PINGRESP });
 	},
 	'PINGRESP': function() {
+	    var fh= FixedHeader(MessageType.PINGRESP, 0, 0, 0);
+	    client.socket.write(new Buffer(fh.concat([0]))); // Remaining Lenght is 0
 	},
 	'DISCONNECT': function() {
+	    // client.socket.end();
 	}
     })[cmd]();
 }
@@ -330,14 +343,6 @@ function MQTTClient(socket) {
     });
 }
 sys.inherits(MQTTClient, EventEmitter);
-
-MQTTClient.prototype.connack= function(code) {
-    var event= {
-	command: MessageType.CONNACK,
-	code: code
-    };
-    this.emit(event.command, event);
-};
 
 MQTTClient.prototype.read= function(data) {
     var client= this;
