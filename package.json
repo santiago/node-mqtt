@@ -1,0 +1,19 @@
+{
+  "name": "node-mqtt",
+  "description": "MQTT implementation for Node.JS",
+  "version": "0.0.1",
+  "homepage": "http://ontoworks.co",
+  "author": "OntoWorks, LLC",
+  "repository": "git://github.com/ontoworks/node-mqtt",
+  "engines": {
+    "node": ">=0.4.12"
+  },
+  "dependencies": {
+    "hiredis": "0.1.14",
+    "redis": "0.7.1"
+  },
+  "scripts": {
+    "start": "node mqtt"
+  }
+}
+
