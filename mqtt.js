@@ -1,6 +1,27 @@
 var EventEmitter= require('events').EventEmitter;
 var MessageType= require('./mqtt-domain').MessageType;
 var FixedHeader= require('./mqtt-domain').FixedHeader;
+// var Topic= require('./mqtt-domain').Topic;
+
+var topics= {};
+
+function Topic(topic, data) {
+    return {
+	subscribe: function() {
+	    if(!topics[topic]) { topics[topic]= {} }
+	    if(!topics[topic][data.clientId]) { topics[topic][data.clientId]= {} }
+	    topics[topic][data.clientId]= data.qos;
+	},
+	unsubscribe: function() {
+	    delete topics[topic][data.clientId];
+	},
+	publish: function(message) {
+	    for(clientId in topics[topic]) {
+		mqtt.server.getClient(clientId).publish(message);
+	    }
+	}
+    }
+}
 
 // Interface for authenticating against black-box backend
 // For now we're using MongoDB optimized for caching
@@ -57,6 +78,18 @@ function callCommand(client, cmd, data) {
 
     function emit(event) {
 	client.emit(event.command, event);
+    }
+
+    function getPayload() {
+	// Extract payload ...
+	var chunkLen, payload="";
+	do {
+	    chunkLen= _getLength()
+	    payload += data.body.slice(_count, _count+chunkLen).toString('utf8');
+	    _count += chunkLen;
+	} while (chunkLen==65535)
+
+	return payload;
     }
 
     ({
@@ -148,14 +181,16 @@ function callCommand(client, cmd, data) {
 	    var usernameLen= getLength();
 
 	    // username not present in payload
-	    if(!usernameLen) {
-		client.connack(4);
-		return;
-	    }
+	    // if(!usernameLen) {
+	    // 	client.connack(4);
+	    // 	return;
+	    // }
 
 	    // Extract username
-	    data.username= data.body.slice(count, count+usernameLen).toString('utf8');
-	    count += usernameLen;
+	    if(usernameLen) {
+		data.username= data.body.slice(count, count+usernameLen).toString('utf8');
+		count += usernameLen;
+	    }
 
 	    // Calculate the length of the password
 	    var passwordLen= getLength();
@@ -171,10 +206,11 @@ function callCommand(client, cmd, data) {
 	    // Authenticate
 	    if(!Authenticate(data)) {
 	    	client.connack(4);
+		return;
 	    }
 
 	    // Everything went a'right, acknowledge connection
-	    emit({ command: MessageType.CONNACK, code: code });
+	    client.connack(0);
         },
 	// Send CONNACK message
 	'CONNACK': function() {
@@ -186,27 +222,22 @@ function callCommand(client, cmd, data) {
 	'PUBLISH': function() {
 	    // Extract topic ...
 	    var topicLen= _getLength();
-
 	    // topic not present in Variable Header
 	    if(!topicLen) {
 		return;
 	    }
-
-	    data.topic= data.body.slice(_count, _count+topicLen).toString('utf8');
+	    var topic= data.body.slice(_count, _count+topicLen).toString('utf8');
 	    _count += topicLen;
 
 	    var messageId= getMessageId();
 
-	    // Extract payload ...
-	    var chunkLen, payload="";
-	    do {
-		chunkLen= _getLength()
-		payload += data.body.slice(_count, _count+chunkLen).toString('utf8');
-		_count += chunkLen;
-	    } while (chunkLen==65535)
-
+	    // QoS 0
+	    if(data.qos==0) {
+		Topic(topic).publish(data);
+	    }
 	    // QoS 1, emit PUBACK
 	    if(data.qos==1) {
+		Topic(topic).publish(data);
 		emit({ command: MessageType.PUBACK, messageId: messageId });
 	    }
 	    // QoS 2, emit PUBREC
@@ -309,8 +340,8 @@ var sys= require('sys');
 var net = require("net");
 var EventEmitter= require('events').EventEmitter;
 
-function MQTTClient(socket) {
-    this.clientID= '';
+function MQTTClient(socket, clientId) {
+    this.clientId= clientId;
     this.socket= socket;
     this.buffer= new Buffer(0);
     this.subscriptions= [];
@@ -390,16 +421,42 @@ MQTTClient.prototype.read= function(data) {
     }
 };
 
+MQTTClient.prototype.connack= function(code) {
+    var event= {
+	command: MessageType.CONNACK,
+	code: code
+    };
+    this.emit(event.command, event);
+};
+
+
+MQTTClient.prototype.publish= function(data) {
+    var fh= FixedHeader(MessageType.PUBLISH, 0, data.qos, 0);
+    var length= encodeLength(data.body.length);
+    this.socket.write(fh.concat(length));
+    this.socket.write(data.body);
+};
+
 function MQTTServer() {
+    var nextClientId= 1;
+    var nextMessageId= 1;
+    var clients= {};
+
     this.server= net.createServer();
+
+    this.getClient= function() {
+	return clients[clientId];
+    };
+
     var self= this;
     this.server.on('connection', function(socket) {
 	sys.log("Connection from " + socket.remoteAddress);
-	client= new MQTTClient(socket);
-	self.emit('new_client', client);
+	clients[nextClientId]= new MQTTClient(socket, nextClientId++);
+
+	self.emit('new_client', clients[nextClientId]);
     });
 }
 sys.inherits(MQTTServer, EventEmitter);
 
-var s= new MQTTServer();
-s.server.listen(1883, "::1");
+var mqtt= new MQTTServer();
+mqtt.server.listen(1883, "::1");
