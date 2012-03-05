@@ -1,3 +1,29 @@
+function parseLength(client) {
+    var client= this;
+
+    /* Calculate the length of the packet */
+    var length = 0;
+    var mul = 1;
+    
+    /* TODO: move calculating the length into a utility function */
+    for(var i = 1; i < client.buffer.length; i++) {
+	length += (client.buffer[i] & 0x7F) * mul;
+	mul *= 0x80;
+
+	if(i > 5) {
+	    /* Length field too long */
+	    sys.log("Error: length field too long");
+	    return { error: "length field too long" };
+	}
+
+	/* Reached the last length byte */
+	if(!(client.buffer[i] & 0x80)) {
+	    return { fixed:(1+i), remaining:length, total:(1+i+length) };
+	}
+    }
+    return false;
+}
+
 module.exports= {
     VERSION: [0x00,0x06,0x4D,0x51,0x49,0x73,0x64,0x70,0x03],
 
@@ -26,6 +52,15 @@ module.exports= {
     QOS_0: 0x00,
     QOS_1: 0x02,
     QOS_2: 0x04,
+
+    encode256: function(number) {
+	return [number/256|0, number%256];
+    },
+
+    decode256: function(array) {
+	if(toString.call([]) !== '[object Array]') { return }
+	return array[0]*256+array[1];
+    },
 
     encodeLength: function(length) {
 	var remaining_length= length;
@@ -74,5 +109,115 @@ module.exports= {
 	utf8Buffer[1]= length%256;
 	buffer.copy(utf8Buffer, 2, 0);
 	return utf8Buffer;
+    },
+
+    // This is an instance method
+    parser: function(data) {
+	var client= this;
+
+	// Accumulate incoming data
+	var newSize= client.buffer.length + data.length;
+	var newBuf= new Buffer(newSize);
+	client.buffer.copy(newBuf);
+	data.copy(newBuf, client.buffer.length);
+	client.buffer= newBuf;
+	
+	// If next packet is taking too long
+	client.timeout= setTimeout(function(client) {
+	    // sys.log('Discarding incomplete packet');
+	    // sys.log(++client.discarded);
+	    // client.emit('error', "Discarding incomplete packet");
+	    return;
+	}, 5000, this);
+
+	while(client.buffer.length) {
+	    var length= parseLength.call(client);
+	    if(length.error) { 
+		client.buffer= new Buffer(0);
+		break;
+	    }
+	    
+	    if(client.buffer.length < length.total) {
+		break;
+	    }
+	    
+	    // Cut the current packet out of the buffer
+	    var packet= client.buffer.slice(0, length.total);
+	    var event= {
+		command: (packet[0] & 0xF0) >> 4,
+		dup: ((packet[0] & 0x08) == 0x08),
+		qos: (packet[0] & 0x06) / 2, 
+		retain: ((packet[0] & 0x01) != 0),
+		body: packet.slice(length.fixed, length.total)
+	    };
+	    client.emit(event.command, event);
+	    // client.pause= false;
+	    
+	    // We've got a complete packet, stop the incomplete packet timer
+	    clearTimeout(client.timeout);
+	    
+	    // Remove current packet from buffer
+	    client.buffer= client.buffer.slice(length.total);
+	}
+    },
+
+    parseCommand: function(client, cmd, data) {
+	var _count = 0;
+
+	function _getLength() {
+	    // Get MSB and multiply by 256
+	    var l= data.body[_count++] << 8;
+
+	    // Most likely the byte isn't there
+	    if(isNaN(l)||l===undefined) {
+		return false;
+	    }
+	    // Get LSB and sum to MSB
+	    return l += data.body[_count++];
+	}
+
+	function getMessageId() {
+	    var messageId= _getLength();
+	    return [messageId/256|0, messageId%256];
+	}
+	
+	function emit(event) {
+	    client.emit(event.command, event);
+	}
+	
+	function getPayload() {
+	    // Extract payload ...
+	    var chunkLen, payload="";
+	    do {
+		chunkLen= _getLength()
+		payload += data.body.slice(_count, _count+chunkLen).toString('utf8');
+		_count += chunkLen;
+	    } while (chunkLen==65535)
+	    
+	    return payload;
+	}
+
+	({
+            'CONNACK': function() {
+	    },
+	    'PUBLISH': function() {
+		// Extract topic ...
+		var topicLen= _getLength();
+		// topic not present in Variable Header
+		if(!topicLen) {
+		    return;
+		}
+		var topic= data.body.slice(_count, _count+topicLen).toString('utf8');
+		_count += topicLen;
+
+		var messageId= getMessageId();
+		var payload= getPayload();
+		client.emit('publish', { messageId: messageId, topic: topic, payload: payload });
+	    },
+	    'PUBACK': function() {
+	    },
+	    'SUBACK': function() {
+	    }
+	})[cmd]();
     }
 };

@@ -1,23 +1,23 @@
 var EventEmitter= require('events').EventEmitter;
-var MessageType= require('./mqtt-domain').MessageType;
-var FixedHeader= require('./mqtt-domain').FixedHeader;
-// var Topic= require('./mqtt-domain').Topic;
+var Domain= require('./mqtt-domain');
+var MessageType= Domain.MessageType;
+var FixedHeader= Domain.FixedHeader;
+var encodeLength= Domain.encodeLength;
 
-var topics= {};
+var __topics= {};
 
-function Topic(topic, data) {
+function Topic(topic) {
     return {
-	subscribe: function() {
-	    if(!topics[topic]) { topics[topic]= {} }
-	    if(!topics[topic][data.clientId]) { topics[topic][data.clientId]= {} }
-	    topics[topic][data.clientId]= data.qos;
+	subscribe: function(clientId, qos) {
+	    if(!__topics[topic]) { __topics[topic]= {} }
+	    __topics[topic][clientId]= qos;
 	},
-	unsubscribe: function() {
-	    delete topics[topic][data.clientId];
+	unsubscribe: function(clientId) {
+	    delete __topics[topic][clientId];
 	},
-	publish: function(message) {
-	    for(clientId in topics[topic]) {
-		mqtt.server.getClient(clientId).publish(message);
+	publish: function(clientId, message) {
+	    for(clientId in __topics[topic]) {
+		mqtt.getClient(clientId).publish(message);
 	    }
 	}
     }
@@ -27,33 +27,6 @@ function Topic(topic, data) {
 // For now we're using MongoDB optimized for caching
 function Authenticate(data) {
     return data.username=="santiago"&&data.password=="santiago";
-}
-
-function parseLength(client) {
-    var client= this;
-
-    /* Calculate the length of the packet */
-    var length = 0;
-    var mul = 1;
-    
-    /* TODO: move calculating the length into a utility function */
-    for(var i = 1; i < client.buffer.length; i++) {
-	length += (client.buffer[i] & 0x7F) * mul;
-	mul *= 0x80;
-
-	if(i > 5) {
-	    /* Length field too long */
-	    sys.log("Error: length field too long");
-	    client.emit('error', "Length field too long");
-	    return false;
-	}
-
-	/* Reached the last length byte */
-	if(!(client.buffer[i] & 0x80)) {
-	    return { fixed:(1+i), remaining:length, total:(1+i+length) };
-	}
-    }
-    return false;
 }
 
 function callCommand(client, cmd, data) {
@@ -94,38 +67,24 @@ function callCommand(client, cmd, data) {
 
     ({
         'CONNECT': function() {
-	    var count = 0;
-	    // Gets lenght when its called.
-	    // This a closure that increments 'count' and reads 'data'
-	    function getLength() {
-		// Get MSB and multiply by 256
-		var l= data.body[count++] << 8;
-		// Most likely the byte isn't there
-		if(isNaN(l)||l===undefined) {
-		    return false;
-		}
-		// Get LSB and sum to MSB
-		return l += data.body[count++];
-	    }
-
 	    var version = "\00\06MQIsdp\03";
-	    if(data.body.slice(count, count+version.length).toString('utf8') !== version) {
+	    if(data.body.slice(_count, _count+version.length).toString('utf8') !== version) {
 		sys.log('Invalid version');
 		client.connack(1);
 		return;
 	    }
 
 	    /* Skip the version field */
-	    count += version.length;
+	    _count += version.length;
 
 	    /* Extract the Connect Flags  */
-	    data.willRetain= (data.body[count] & 0x20 != 0);
-	    data.willQos= (data.body[count] & 0x18) >> 3;
-	    data.willFlag= (data.body[count] & 0x04 != 0);
-	    data.cleanSession= (data.body[count] & 0x02 != 0);
+	    data.willRetain= (data.body[_count] & 0x20 != 0);
+	    data.willQos= (data.body[_count] & 0x18) >> 3;
+	    data.willFlag= (data.body[_count] & 0x04 != 0);
+	    data.cleanSession= (data.body[_count] & 0x02 != 0);
 	    /* Check for Username and Passord Flags */
-	    var hasUsername= data.body[count] >> 7 == 1;
-	    var hasPassword= data.body[count] >> 6 == 3;
+	    var hasUsername= data.body[_count] >> 7 == 1;
+	    var hasPassword= data.body[_count] >> 6 == 3;
 
 	    // For now we're not allowing anonymous connections
 	    if(!hasUsername || !hasPassword) {
@@ -133,15 +92,15 @@ function callCommand(client, cmd, data) {
 		return;
 	    }
 
-	    count++;
+	    _count++;
 
 	    /* Extract the keepalive */
-	    data.keepalive= data.body[count++] << 8;
-	    data.keepalive += data.body[count++];
+	    data.keepalive= data.body[_count++] << 8;
+	    data.keepalive += data.body[_count++];
 	    // TODO: Set keepAlive as timeout somewhere within the client object
 
 	    /* Extract the client ID length */
-	    var clientLen= getLength();
+	    var clientLen= _getLength();
 	    if(!clientLen||clientLen>23) {
 		console.log("0x02 Connection Refused: identifier rejected");
 		// 0x02 connection Refused: identifier rejected
@@ -159,26 +118,26 @@ function callCommand(client, cmd, data) {
 	    }
 
 	    /* Extract client ID */
-	    data.clientId= data.body.slice(count, count+clientLen).toString('utf8');
-	    count += clientLen;
+	    data.clientId= data.body.slice(_count, _count+clientLen).toString('utf8');
+	    _count += clientLen;
 
 	    // Extract the will topic/message
 	    if(data.willFlag) {
 		// Calculate the length of the topic string
-		var topicLen= getLength();
+		var topicLen= _getLength();
 
 		// Cut the topic string out of the buffer
-		data.willTopic= data.body.slice(count, count+topicLen).toString('utf8');
+		data.willTopic= data.body.slice(_count, _count+topicLen).toString('utf8');
 		// Move the pointer to after the topic string
-		count += topicLen;
+		_count += topicLen;
 
 		// What remains in the body is will message 
-		data.willMessage= data.body.slice(count, data.body.length);
+		data.willMessage= data.body.slice(_count, data.body.length);
 	    }
 
 	    // Extract username and password ...
 	    // Calculate the length of the username
-	    var usernameLen= getLength();
+	    var usernameLen= _getLength();
 
 	    // username not present in payload
 	    // if(!usernameLen) {
@@ -188,20 +147,20 @@ function callCommand(client, cmd, data) {
 
 	    // Extract username
 	    if(usernameLen) {
-		data.username= data.body.slice(count, count+usernameLen).toString('utf8');
-		count += usernameLen;
+		data.username= data.body.slice(_count, _count+usernameLen).toString('utf8');
+		_count += usernameLen;
 	    }
 
 	    // Calculate the length of the password
-	    var passwordLen= getLength();
+	    var passwordLen= _getLength();
 	    // password not present in payload
 	    if(!passwordLen) {
 		client.connack(4);
 		return;
 	    }
 	    // Extract password
-	    data.password= data.body.slice(count, count+passwordLen).toString('utf8');
-	    count += passwordLen;
+	    data.password= data.body.slice(_count, _count+passwordLen).toString('utf8');
+	    _count += passwordLen;
 
 	    // Authenticate
 	    if(!Authenticate(data)) {
@@ -237,7 +196,7 @@ function callCommand(client, cmd, data) {
 	    }
 	    // QoS 1, emit PUBACK
 	    if(data.qos==1) {
-		Topic(topic).publish(data);
+		Topic(topic).publish(client.cliendId, data);
 		emit({ command: MessageType.PUBACK, messageId: messageId });
 	    }
 	    // QoS 2, emit PUBREC
@@ -270,13 +229,6 @@ function callCommand(client, cmd, data) {
 		return false;
 	    }
 
-	    // Fixed Header QoS should be 1; otherwise, send SUBACK anyway
-	    // and return
-	    if(data.qos!==1) {
-		client.emit(MessageType.SUBACK, MessageID);
-		return false;
-	    }
-
 	    // Extract the topic(s)
 	    var topics= [];
 	    while(data.body[_count]!==undefined) {
@@ -286,8 +238,9 @@ function callCommand(client, cmd, data) {
 		    name: data.body.slice(_count-length, _count).toString('utf8'),
 		    qos: data.body.slice(_count++,_count).toString('utf8')
 		};
-		topics.push(topic);
+		Topic(topic.name).subscribe(client.clientId, data.qos);
 		client.subscriptions.push(topic.name);
+		topics.push(topic);
 	    }
 
 	    // Emit SUBACK
@@ -315,6 +268,22 @@ function callCommand(client, cmd, data) {
 	    if(!messageId) {
 		return false;
 	    }
+
+	    // Extract the topic(s)
+	    var topics= [];
+	    while(data.body[_count]!==undefined) {
+		var length= _getLength();
+		_count += length;
+		var topic= data.body.slice(_count-length, _count).toString('utf8');
+
+		// Remove this topic from client
+		var index= client.subscriptions.indexOf(topic);
+		client.subscriptions.splice(index, 1);
+
+		// Inject
+		Topic(topic).unsubscribe(client.clientId);
+	    }
+
 	    emit({ command: MessageType.UNSUBACK, messageId: messageId});
 	},
 	'UNSUBACK': function() {
@@ -331,7 +300,7 @@ function callCommand(client, cmd, data) {
 	    client.socket.write(new Buffer(fh.concat([0]))); // Remaining Lenght is 0
 	},
 	'DISCONNECT': function() {
-	    // client.socket.end();
+	    client.disconnect();
 	}
     })[cmd]();
 }
@@ -375,51 +344,7 @@ function MQTTClient(socket, clientId) {
 }
 sys.inherits(MQTTClient, EventEmitter);
 
-MQTTClient.prototype.read= function(data) {
-    var client= this;
-
-    // Accumulate incoming data
-    var newSize= client.buffer.length + data.length;
-    var newBuf= new Buffer(newSize);
-    client.buffer.copy(newBuf);
-    data.copy(newBuf, client.buffer.length);
-    client.buffer= newBuf;
-
-    // If next packet is taking too long
-    client.timeout= setTimeout(function(client) {
-	// sys.log('Discarding incomplete packet');
-	// sys.log(++client.discarded);
-	// client.emit('error', "Discarding incomplete packet");
-	return;
-    }, 5000, this);
-
-    while(client.buffer.length) {
-	var length= parseLength.call(client);
-	if(!length) { break }
-
-	if(client.buffer.length < length.total) {
-	    break;
-	}
-
-	// Cut the current packet out of the buffer
-	var packet= client.buffer.slice(0, length.total);
-	var event= {
-	    command: (packet[0] & 0xF0) >> 4,
-	    dup: ((packet[0] & 0x08) == 0x08),
-	    qos: (packet[0] & 0x06) / 2, 
-	    retain: ((packet[0] & 0x01) != 0),
-	    body: packet.slice(length.fixed, length.total)
-	};
-	client.emit(event.command, event);
-	// client.pause= false;
-
-	// We've got a complete packet, stop the incomplete packet timer
-	clearTimeout(client.timeout);
-
-	// Remove current packet from buffer
-	client.buffer= client.buffer.slice(length.total);
-    }
-};
+MQTTClient.prototype.read= Domain.parser;
 
 MQTTClient.prototype.connack= function(code) {
     var event= {
@@ -431,10 +356,31 @@ MQTTClient.prototype.connack= function(code) {
 
 
 MQTTClient.prototype.publish= function(data) {
+    var self= this;
+
     var fh= FixedHeader(MessageType.PUBLISH, 0, data.qos, 0);
     var length= encodeLength(data.body.length);
-    this.socket.write(fh.concat(length));
-    this.socket.write(data.body);
+
+    try {
+	this.socket.write(new Buffer(fh.concat(length)));
+	this.socket.write(data.body);
+    } catch(e) {
+	// Most likely it tried to write to a closed connection
+	// Shouldn't happen!!!
+
+	// Remove this cliendId from the topics it subscribed
+	this.disconnect();
+	console.log(e);
+    }
+};
+
+MQTTClient.prototype.disconnect= function() {
+    var self= this;
+    this.socket.end();
+    this.subscriptions.forEach(function(topic) {
+	Topic(topic).unsubscribe(self.clientId);
+    });
+    self.emit('destroy');
 };
 
 function MQTTServer() {
@@ -444,14 +390,20 @@ function MQTTServer() {
 
     this.server= net.createServer();
 
-    this.getClient= function() {
+    this.getClient= function(clientId) {
 	return clients[clientId];
     };
 
     var self= this;
     this.server.on('connection', function(socket) {
 	sys.log("Connection from " + socket.remoteAddress);
-	clients[nextClientId]= new MQTTClient(socket, nextClientId++);
+
+	var clientId= nextClientId;
+	clients[clientId]= new MQTTClient(socket, nextClientId++);
+	clients[clientId].on('destroy', function() {
+	    console.log("Killing client "+clientId);
+	    delete clients[clientId];
+	});
 
 	self.emit('new_client', clients[nextClientId]);
     });

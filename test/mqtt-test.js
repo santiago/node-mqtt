@@ -2,6 +2,9 @@ require('should');
 var sys= require('sys');
 var net= require('net');
 
+var sys= require('sys');
+var net= require('net');
+
 var Domain= require('../mqtt-domain');
 var FixedHeader= Domain.FixedHeader;
 var MessageType= Domain.MessageType;
@@ -10,162 +13,21 @@ var encodeLength= Domain.encodeLength;
 var chunker= Domain.chunker;
 var utf8StringBuffer= Domain.utf8StringBuffer;
 
+var Client= require('../mqtt-client');
+
 var VERSION= Domain.VERSION;
-
-var Client= function(opts) {
-    var self= this;
-    opts= opts ? opts : {};
-
-    this.host= opts.host||"::1";
-    this.port= opts.port||1883;
-
-    this.username= opts.username;
-    this.password= opts.password;
-    this.clientId= opts.clientId;
-
-    this.socket= new net.Socket(); 
-    this.socket.connect(1883, "::1");
-
-    this.socket.on('connect', function() {
-	self.socket.on('data', function(data) {
-	    self.socket.emit(data[0]>>4, data);
-	});
-	self.connect();
-    });
-
-    var nextMessageId= 1;
-    this.nextMessageId= function() {
-	return new Buffer([nextMessageId/256|0, nextMessageId++%256]);
-    }
-}
-
-Client.prototype.connect= function() {
-    if(this.connected) {
-	return;
-    }
-
-    // Fixed Header
-    var FLAGS= 3 << 6;
-    var fh= FixedHeader(MessageType.CONNECT, 0, 0, 0);
-    var vh= VERSION.concat([FLAGS,0,0x0A]);
-    var length= vh.length;
-    
-    // Get clientID
-    var clientID= this.clientId || function() {
-	var crypto= require('crypto');
-	var hash= crypto.createHash('sha1');
-	hash.update(Date()+Math.random());
-	return hash.digest('base64').slice(0,23);
-    }();
-
-    if(clientID!==undefined) { 
-	clientID= new Buffer(clientID); 
-	length += clientID.length+2;
-    }
-
-    if(this.username!==undefined) {
-	var username= new Buffer(this.username);
-	length += username.length+2;
-    }
-    
-    if(this.password!==undefined) {
-	var password= new Buffer(this.password);
-	length += password.length+2;
-    }
-    
-    this.socket.write(new Buffer(fh.concat(length).concat(vh)));
-    
-    // Push clientID into stream
-    if (clientID!==undefined) {
-	this.socket.write(new Buffer([0x00,clientID.length]));
-	if(clientID.length) { this.socket.write(clientID); }
-    }
-    
-    // Push username into stream
-    if (username!==undefined) { 
-	this.socket.write(new Buffer([0x00,username.length]));
-	this.socket.write(username);
-    }
-    // Push password into stream
-    if (password!==undefined) { 
-	this.socket.write(new Buffer([0x00,password.length]));
-	this.socket.write(password);
-    }
-
-    var self= this;
-    this.socket.on(MessageType.CONNACK, function() {
-	self.connected= true;	
-    });
-};
-
-Client.prototype.subscribe= function(topics, callback) {
-    // Expecting Array
-    if(!(topics instanceof Array)) {
-	throw("I'm expecting an Array of topics!");
-    }
-
-    var self= this;
-
-    var fh= FixedHeader(MessageType.SUBSCRIBE, 0, 1, 0);
-    var vh= this.nextMessageId(); // Message ID
-    var length= vh.length;
-
-    topics.forEach(function(_topic) {
-	var topic= new Buffer(_topic[0]);
-	length += topic.length+3;
-    });
-	    
-    // Write message
-    this.socket.write(new Buffer(fh.concat(length)));
-    this.socket.write(vh);
-    topics.forEach(function(_topic) {
-	self.socket.write(new Buffer([0x00,_topic[0].length]));
-	self.socket.write(new Buffer(_topic[0].toString()));
-	self.socket.write(new Buffer(_topic[1].toString()));
-    });
-
-    this.socket.on(MessageType.SUBACK, function(ack) {
-	callback(ack);
-    });
-};
-
-Client.prototype.unsubscribe= function() {
-};
-
-Client.prototype.publish= function(topic, buf, callback) {
-    var self= this;
-
-    var fh= FixedHeader(MessageType.PUBLISH, 0, 1, 0);
-
-    var topic= utf8StringBuffer(new Buffer(topic));
-    var messageId= this.nextMessageId();
-    var chunked= chunker(buf);
-    var length= encodeLength(topic.length+messageId.length+(buf.length+chunked.length*2));
-
-    // Write Fixed Header
-    this.socket.write(new Buffer(fh.concat(length)));
-    // Write Variable Header
-    this.socket.write(topic);
-    this.socket.write(messageId);
-    // Write chunked Payload
-    chunked.forEach(function(chunk) {
-	self.socket.write(utf8StringBuffer(chunk));
-    });
-	    
-    this.socket.on(MessageType.PUBACK, function(ack) {
-	callback(ack);
-    });
-};
 
 describe('MQTT', function() {
     var client = new net.Socket(); 
     client.connect(1883, "::1");
     client.on('connect', function() { 
-	// sys.log('* Client connected');
+    	// sys.log('* Client connected');
     });
 
+    client.buffer= new Buffer(0);
+
     client.on('data', function(data) {
-	client.emit(data[0]>>4, data);
+    	Domain.parser.call(client, data);
     });
 
     var config= { 
@@ -220,7 +82,7 @@ describe('MQTT', function() {
 	connect("santiago", FLAGS, connack, config.username, config.password);
     }
 
-    /*describe('CONNECT/CONNACK', function() {
+    describe('CONNECT/CONNACK', function() {
 	beforeEach(function() {
 	    client.removeAllListeners(MessageType.CONNACK);
 	});
@@ -230,7 +92,7 @@ describe('MQTT', function() {
 	it("should refuse connection if clientID has no length or is not present", function(done) {
 	    var FLAGS= 3 << 6; // Username and Password flags set
 	    var connack= function(data) {
-		data[3].should.equal(2);
+		data.body[1].should.equal(2);
 		done();
 	    };
 	    connect("", FLAGS, connack);
@@ -239,7 +101,7 @@ describe('MQTT', function() {
 	it("should refuse connection if clientID has length > 23", function(done) {
 	    var FLAGS= 3 << 6; // Username and Password flags set
 	    var connack= function(data) {
-		data[3].should.equal(2);
+		data.body[1].should.equal(2);
 		done();
 	    };
 	    connect("012345678901234567890123", FLAGS, connack);
@@ -248,7 +110,7 @@ describe('MQTT', function() {
 	it("should refuse connection with return code 5 if username or password flags not set in the Variable Header", function(done) {
 	    var FLAGS= 0x80; // Username set and Password flags not set
 	    connectMe(FLAGS, function(data) {
-		data[3].should.equal(5);
+		data.body[1].should.equal(5);
 		done();
 	    });
 	});
@@ -256,7 +118,7 @@ describe('MQTT', function() {
 	it("should refuse connection with return code 4 if username or password not present in payload", function(done) {
 	    var FLAGS= 3 << 6; // Username and Password flags set
 	    var connack= function(data) {
-		data[3].should.equal(4);
+		data.body[1].should.equal(4);
 		done();
 	    };
 	    connect("santiago", FLAGS, connack);
@@ -265,7 +127,7 @@ describe('MQTT', function() {
 	it("should refuse connection with return code 4 if wrong username or password", function(done) {
 	    var FLAGS= 3 << 6; // Username and Password flags set
 	    var connack= function(data) {
-		data[3].should.equal(4);
+		data.body[1].should.equal(4);
 		done();
 	    };
 	    connect("santiago", FLAGS, connack, "santiag", "santiago");
@@ -274,7 +136,7 @@ describe('MQTT', function() {
 	it("should connect", function(done) {
 	    var FLAGS= 3 << 6; // Username and Password flags set
 	    connectMe(FLAGS, function(data) {
-		data[3].should.equal(0);
+		data.body[1].should.equal(0);
 		done();
 	    });
 	});
@@ -309,13 +171,11 @@ describe('MQTT', function() {
 	    client.write('2');
 	    
 	    client.on(MessageType.SUBACK, function(data) {
-		data[1].should.equal(5); // Length
-		data[2].should.equal(0); // MessageID MSB
-		data[3].should.equal(10); // MessageID LSB
-		// Test topics' qos
-		data[4].should.equal(0);
-		data[5].should.equal(1);
-		data[6].should.equal(2);
+		data.body[1].should.equal(10); // MessageID LSB
+		// // Test topics' qos
+		data.body[2].should.equal(0);
+		data.body[3].should.equal(1);
+		data.body[4].should.equal(2);
 		done();
 	    });
 	});
@@ -336,7 +196,8 @@ describe('MQTT', function() {
 		while(output.length < 65535) {
 		    output += output;
 		}
-		return (new Buffer(output));
+		// return (new Buffer(output));
+		return (new Buffer("output"));
 	    }();
 	    var chunked= chunker(payload);
 	    
@@ -353,9 +214,9 @@ describe('MQTT', function() {
 	    chunked.forEach(function(chunk) {
 		client.write(utf8StringBuffer(chunk));
 	    });
-	    
+
 	    client.on(MessageType.PUBACK, function(data) {
-		data[3].should.equal(10);
+		data.body[1].should.equal(10);
 		done();
 	    });
 	});
@@ -383,7 +244,7 @@ describe('MQTT', function() {
 	    
 	    client.on(MessageType.PUBREC, function(data) {
 		// Message ID should be 10
-		data[3].should.equal(10);
+		data.body[1].should.equal(10);
 		
 		// Respond with PUBREL
 		var fh= FixedHeader(MessageType.PUBREL, 0, 1, 0);
@@ -395,7 +256,7 @@ describe('MQTT', function() {
 	    
 	    client.on(MessageType.PUBCOMP, function(data) {
 		// Message ID should be 10
-		data[3].should.equal(10);
+		data.body[1].should.equal(10);
 		done();
 	    });
 	});
@@ -404,16 +265,17 @@ describe('MQTT', function() {
     describe('UNSUBSCRIBE/UNSUBACK', function() {
 	it("should unsubscribe", function(done) {
 	    var fh= FixedHeader(MessageType.UNSUBSCRIBE, 0, 1, 0);
-	    fh= fh.concat([2]);
-	    var messageId= new Buffer([0x00,0x0a]);
+	    fh= fh.concat([9]);
+	    var messageId= new Buffer([0,10]);
 	    client.write(new Buffer(fh));
 	    client.write(messageId);
 
+	    client.write(new Buffer([0,5])); // Topic Length
+	    client.write("salsa"); // Topic
+
 	    client.on(MessageType.UNSUBACK, function(data) {
-		// Remaining Length should be 2
-		data[1].should.equal(2);
 		// Message ID should be 10
-		data[3].should.equal(10);
+		data.body[1].should.equal(10);
 		done();
 	    });
 	});
@@ -428,7 +290,17 @@ describe('MQTT', function() {
 		done();
 	    });
 	});
-    });*/
+    });
+
+    describe('DISCONNECT', function() {
+	it("should disconnect", function(done) {
+	    var fh= FixedHeader(MessageType.DISCONNECT, 0, 0, 0);
+	    client.write(new Buffer(fh.concat([0]))); // Remaining Lenght is 0
+	    done();
+	});
+    });
+
+    var Client= require("../mqtt-client");
 
     describe('Client', function() {
 	var _client;
@@ -438,7 +310,7 @@ describe('MQTT', function() {
 		password: "santiago",
 		clientId: "petardín"
 	    });
-	    _client.socket.on(MessageType.CONNACK, function(data) {
+	    _client.on(MessageType.CONNACK, function(data) {
 		done();
 	    });
 	})
@@ -447,18 +319,36 @@ describe('MQTT', function() {
 	it("should refuse connection if clientId already taken");
 
 	it("should subscribe topics, publish to those topics, and listen back what was published", function(done) {
-	    _client.subscribe([['salsa',1],['hiphop',2]], function(ack) {
-		var salsa= false, hiphop= false;
-		_client.publish('salsa', new Buffer('salsa'), function(ack) {
+	    var salsa= false, hiphop= false, salsaId, hiphopId;
+	    
+	    _client.subscribe([['salsa',1],['hiphop',2]]);
+	    
+	    _client.on('publish', function(data) {
+		if(data.messageId[1] == salsaId) {
+		    data.topic.should.equal('salsa');
+		    data.payload.should.equal('salsa');
 		    salsa= true;
-		});
-		_client.publish('hiphop', new Buffer('hiphop'), function(ack) {
+		}
+
+		if(data.messageId[1] == hiphopId) {
+		    data.topic.should.equal('hiphop');
+		    data.payload.should.equal('hiphop');
 		    hiphop= true;
-		});
-		setTimeout(function() {
-		    if(salsa && hiphop) { done() }
-		}, 20)
+		}
 	    });
+
+	    _client.on(MessageType.SUBACK, function(data) {
+		salsaId= _client.publish('salsa', new Buffer('salsa'));
+		hiphopId= _client.publish('hiphop', new Buffer('hiphop'));
+	    });
+
+	    setTimeout(function() {
+		if(salsa && hiphop) { done() }
+	    }, 20);
+	});
+
+	it("should disconnect", function() {
+	    _client.disconnect();
 	});
     });
 });
